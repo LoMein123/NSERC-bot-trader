@@ -43,7 +43,7 @@ def order_combo(call_spread: tuple[float, float, float], put_spread: tuple[float
     stop_trigger_price: stop price
     stop_limit_price: limit price
     """
-    long_put_strike, short_put_strike, short_call_strike, long_call_strike= sorted(call_spread[:2] + put_spread[:2])
+    long_put_strike, short_put_strike, short_call_strike, long_call_strike = sorted(call_spread[:2] + put_spread[:2])
 
     legs = [
         ComboLeg(conId=get_contract(long_call_strike, 'C').conId, ratio=1, action='BUY', exchange='SMART'), 
