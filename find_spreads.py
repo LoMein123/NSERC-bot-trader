@@ -151,7 +151,7 @@ def get_spreads(width: float, time, entry_credit: float, nof_lot: int, upper_pro
     chain = next(c for c in chains if c.tradingClass == 'SPXW' and c.exchange == 'SMART')
     print(f"\nchain={chain}\n")
 
-    # Filter strikes within ±10 points of the SPX value.
+    # Filter strikes within ±10 times the width points of the SPX value
     strikes = [strike for strike in chain.strikes if strike % 5 == 0 and (spx_value - 10*width) < strike < (spx_value + 10*width)]
     expiration = date.today().strftime('%Y%m%d')
     rights = ['P', 'C']
