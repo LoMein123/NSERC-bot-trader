@@ -17,6 +17,8 @@ class IBApp(EWrapper, EClient):
         self.request_id = 1
         self.strike_prices = []
         self.current_request = 0
+        self.time_intervals = self.generate_time_intervals()
+        self.current_time_interval = 0
 
     def error(self, reqId, errorCode, errorString):
         print(f"Error: {reqId}, Error Code: {errorCode}, Error String: {errorString}")
@@ -24,7 +26,7 @@ class IBApp(EWrapper, EClient):
 
     def historicalData(self, reqId, bar: BarData):
         current_strike, current_right = self.strike_prices[self.current_request][:2]
-        print(f"Strike: {current_strike}, Right: {current_right}, Date: {bar.date}, Bid: {bar.low}, Ask: {bar.high}, Volume: {bar.volume}")
+        print(f"Strike: {current_strike}, Right: {current_right}, Date: {bar.date}, Bid: {bar.low}, Ask: {bar.high}")
 
     def historicalDataEnd(self, reqId, start, end):
         print(f"End of Historical Data for Request ID: {reqId}\n")
@@ -40,12 +42,15 @@ class IBApp(EWrapper, EClient):
         self.start()
 
     def start(self):
+        NUM_OF_STRIKES: int = 15    # 60 req per 10 min, but BID_ASK counts as two => 15 max
+
         # Get current date
         current_date = datetime.datetime.now().strftime("%Y%m%d")
 
         # Define contract details
-        market_price = 5355
-        strike_range = range(market_price - 10, market_price + 10, 5)
+        market_price = 5365
+        strike_range = range(market_price - 5*NUM_OF_STRIKES, market_price + 5*NUM_OF_STRIKES, 5)
+        print(len(strike_range)) 
 
         for strike_price in strike_range:
             for right in ["P", "C"]:
@@ -53,8 +58,19 @@ class IBApp(EWrapper, EClient):
         
         self.request_next_historical_data()
 
+    def generate_time_intervals(self):
+        intervals = []
+        start_time = datetime.datetime.strptime("09:30", "%H:%M")
+        end_time = datetime.datetime.strptime("16:00", "%H:%M")
+        current_time = start_time
+        while current_time < end_time:
+            intervals.append(current_time.strftime("%H:%M:%S"))
+            current_time += datetime.timedelta(minutes=30)
+        return intervals
+
     def request_next_historical_data(self):
         strike_price, right, current_date = self.strike_prices[self.current_request]
+        time_interval = self.time_intervals[self.current_time_interval]
 
         contract = Contract()
         contract.symbol = "SPX"
@@ -65,8 +81,12 @@ class IBApp(EWrapper, EClient):
         contract.lastTradeDateOrContractMonth = current_date
         contract.right = right
 
+        end_time = datetime.datetime.now().strftime(f"%Y%m%d {time_interval}")
+
+        print(f"TIME = {end_time}")
+
         print(f"Requesting historical data for Strike: {strike_price}, Right: {right}")
-        self.reqHistoricalData(self.request_id, contract, "", "1 D", "5 secs", "BID_ASK", 1, 1, False, [])
+        self.reqHistoricalData(self.request_id, contract, "", "1800 S", "1 secs", "BID_ASK", 1, 1, False, [])
         self.request_id += 1
 
     def stop(self):
