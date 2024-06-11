@@ -1,104 +1,168 @@
 """
-This module gets 0DTE intraday options data for the SPX.
+This module fetches data (bid, ask) of traded 0DTE intraday options data for the SPX.
 """
+from ib_insync import *
+from  datetime import datetime
+import time
 
-from ibapi.client import EClient
-from ibapi.wrapper import EWrapper
-from ibapi.contract import Contract
-from ibapi.common import BarData
-from threading import Event, Timer
-import datetime
+FILENAME: str = 'intraday.csv'
 
-class IBApp(EWrapper, EClient):
-    def __init__(self):
-        EClient.__init__(self, self)
-        EWrapper.__init__(self)
-        self.data_event = Event()
-        self.request_id = 1
-        self.strike_prices = []
-        self.current_request = 0
-        self.time_intervals = self.generate_time_intervals()
-        self.current_time_interval = 0
+def get_open_price(ib: IB, date: datetime = datetime.now()) -> float:
+    """
+    Function that returns the spx's opening price
 
-    def error(self, reqId, errorCode, errorString):
-        print(f"Error: {reqId}, Error Code: {errorCode}, Error String: {errorString}")
-        self.data_event.set()
+    Parameters
+    ----------
+    ib: Interactive brokers object
+    date: Date to get the opening price of (today by default)
 
-    def historicalData(self, reqId, bar: BarData):
-        current_strike, current_right = self.strike_prices[self.current_request][:2]
-        print(f"Strike: {current_strike}, Right: {current_right}, Date: {bar.date}, Bid: {bar.low}, Ask: {bar.high}")
+    Returns
+    ----------
+    Opening Price of the SPX on date
+    """
+    spx_contract = Index(symbol='SPX', exchange='CBOE')
 
-    def historicalDataEnd(self, reqId, start, end):
-        print(f"End of Historical Data for Request ID: {reqId}\n")
-        self.data_event.set()
-        self.current_request += 1
-        if self.current_request < len(self.strike_prices):
-            self.request_next_historical_data()
-        else:
-            self.disconnect()
+    # Request historical data for the SPX contract
+    bars = ib.reqHistoricalData(
+        spx_contract,
+        endDateTime=date,
+        durationStr='1 D',
+        barSizeSetting='1 day',
+        whatToShow='TRADES',
+        useRTH=True,
+        formatDate=1
+    )
 
-    def nextValidId(self, orderId):
-        self.request_id = orderId
-        self.start()
+    # Print the opening price
+    if bars:
+        opening_price = bars[0].open
+    else:
+        raise Exception("Could not fetch opening price")
 
-    def start(self):
-        NUM_OF_STRIKES: int = 15    # 60 req per 10 min, but BID_ASK counts as two => 15 max
+    return opening_price
 
-        # Get current date
-        current_date = datetime.datetime.now().strftime("%Y%m%d")
 
-        # Define contract details
-        market_price = 5365
-        strike_range = range(market_price - 5*NUM_OF_STRIKES, market_price + 5*NUM_OF_STRIKES, 5)
-        print(len(strike_range)) 
+def get_data(ib: IB, strike: float, right: str, date: datetime = datetime.now()):
+    """
+    Generator that yields the bid/ask prices for a 0DTE option.
 
-        for strike_price in strike_range:
-            for right in ["P", "C"]:
-                self.strike_prices.append((strike_price, right, current_date))
-        
-        self.request_next_historical_data()
+    Parameters
+    ----------
+    ib: Interactive brokers object
+    strike: Strike price
+    right: 'C' or 'P'
+    date: Date of option expiry (today by default)
 
-    def generate_time_intervals(self):
-        intervals = []
-        start_time = datetime.datetime.strptime("09:30", "%H:%M")
-        end_time = datetime.datetime.strptime("16:00", "%H:%M")
-        current_time = start_time
-        while current_time < end_time:
-            intervals.append(current_time.strftime("%H:%M:%S"))
-            current_time += datetime.timedelta(minutes=30)
-        return intervals
+    Returns
+    ----------
+    List of data [timestamp, strike price, right, bid, ask]
+    """
+    formatted_date: str = date.strftime("%Y%m%d")      # Using this function inside Option constructor does not work for some reason...
+    end_time: str = formatted_date + ' 16:00:01'
 
-    def request_next_historical_data(self):
-        strike_price, right, current_date = self.strike_prices[self.current_request]
-        time_interval = self.time_intervals[self.current_time_interval]
+    '''data = dict()'''
 
-        contract = Contract()
-        contract.symbol = "SPX"
-        contract.secType = "OPT"
-        contract.exchange = "SMART"
-        contract.currency = "USD"
-        contract.strike = strike_price
-        contract.lastTradeDateOrContractMonth = current_date
-        contract.right = right
+    contract = Option(
+        symbol='SPX', 
+        lastTradeDateOrContractMonth=formatted_date, 
+        strike=strike, 
+        right=right, 
+        exchange='SMART', 
+        currency='USD'
+        )
 
-        end_time = datetime.datetime.now().strftime(f"%Y%m%d {time_interval}")
+    bars: list[BarData] = ib.reqHistoricalData(contract, end_time, "1 D", "15 secs", "BID_ASK", 1, 1, False, [])
+    ib.sleep(15)
 
-        print(f"TIME = {end_time}")
+    for bar in bars: 
+        '''data["time"] = bar.date
+        data["strike"] = strike
+        data["right"] = right
+        data["bid"] = bar.low
+        data["ask"] = bar.high'''
 
-        print(f"Requesting historical data for Strike: {strike_price}, Right: {right}")
-        self.reqHistoricalData(self.request_id, contract, "", "1800 S", "1 secs", "BID_ASK", 1, 1, False, [])
-        self.request_id += 1
+        time = bar.date.strftime('%H%M%S') + '000'
+        yield [time, strike, right, bar.low, bar.high]
 
-    def stop(self):
-        self.disconnect()
 
+def file_write(data: dict) -> None:
+    """
+    Function that writes data to the specified file.
+
+    Parameters
+    ----------
+    data: List of data [timestamp, strike price, right, bid, ask]
+    """
+    time, strike, right, bid, ask = data
+
+    with open(FILENAME, 'a') as file:
+        file.write(f"{time},{right},'A',{ask},{strike}\n")
+        file.write(f"{time},{right},'B',{bid},{strike}\n")
+    
+
+def round_to_multiple(x: float, base: int) -> int:
+    """
+    Helper function that rounds to the nearest multiple of 'base'
+
+    Parameters
+    ----------
+    x: number to round
+    base: multiple to round to
+
+    Returns
+    ----------
+    x rounded to the nearest multiple of 'base'
+    """
+    return base * round(x/base)
+
+
+def create_sublist(list: list, n: int) -> list: 
+    """
+    Helper function that creates sublists of list by grouping elements in groups of 'len'
+
+    Parameters
+    ----------
+    list: list to divide into sublists
+    n: number of elements in each sublist
+
+    Returns
+    ----------
+    list of sublists
+    """
+    return [list[i:i + n] for i in range(0, len(list), n)]
+
+    
 def main() -> None:
-    app = IBApp()
-    app.connect("127.0.0.1", 7497, clientId=1)
+    CURRENT_TIME: datetime = datetime.now()
+    NUM_OF_STRIKES: int = 30
 
-    Timer(300, app.stop).start()
+    # Connect to TWS
+    ib: IB = IB()
+    ib.connect('127.0.0.1', 7497, clientId=1)
 
-    app.run()
+    # Get opening price of SPX
+    open_price: float = get_open_price(ib)
+    print(f"SPX Opening = {open_price}")
+
+    # Round opening to nearest multiple of 5
+    open_strike: int = round_to_multiple(open_price, 5)
+    print(f"SPX Opening Strike = {open_strike}")
+    
+    # Get strike prices to capture data from
+    strike_range: list[float] = range(open_strike - 5*NUM_OF_STRIKES, open_strike + 5*NUM_OF_STRIKES, 5)  # Strike prices to get data for (30 +/- opening value)
+    strike_iterations: list[list] = create_sublist(strike_range, 15)                                                  # Sublists of 15 strikes each, due to rate limit
+
+    for iteration in strike_iterations:
+        for strike in iteration:
+            for right in ['C','P']:
+                for data in get_data(ib, strike, right):
+                    file_write(data)
+
+        time.sleep(610) # 10 min cooldown for rate limit
+
+    # Disconnect from IB
+    ib.disconnect()
+
 
 if __name__ == "__main__":
     main()
