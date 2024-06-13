@@ -3,6 +3,7 @@ This module fetches data (bid, ask) of traded 0DTE intraday options data for the
 """
 from ib_insync import *
 from  datetime import datetime
+from typing import Generator
 import time
 
 FILENAME: str = 'intraday.csv'
@@ -42,7 +43,7 @@ def get_open_price(ib: IB, date: datetime = datetime.now()) -> float:
     return opening_price
 
 
-def get_data(ib: IB, strike: float, right: str, date: datetime = datetime.now()):
+def get_data(ib: IB, strike: float, right: str, date: datetime = datetime.now()) -> Generator:
     """
     Generator that yields the bid/ask prices for a 0DTE option.
 
@@ -60,8 +61,6 @@ def get_data(ib: IB, strike: float, right: str, date: datetime = datetime.now())
     formatted_date: str = date.strftime("%Y%m%d")      # Using this function inside Option constructor does not work for some reason...
     end_time: str = formatted_date + ' 16:00:01'
 
-    '''data = dict()'''
-
     contract = Option(
         symbol='SPX', 
         lastTradeDateOrContractMonth=formatted_date, 
@@ -75,13 +74,8 @@ def get_data(ib: IB, strike: float, right: str, date: datetime = datetime.now())
     ib.sleep(15)
 
     for bar in bars: 
-        '''data["time"] = bar.date
-        data["strike"] = strike
-        data["right"] = right
-        data["bid"] = bar.low
-        data["ask"] = bar.high'''
-
         time = bar.date.strftime('%H%M%S') + '000'
+
         yield [time, strike, right, bar.low, bar.high]
 
 
@@ -95,7 +89,7 @@ def file_write(data: dict) -> None:
     """
     time, strike, right, bid, ask = data
 
-    with open(FILENAME, 'a') as file:
+    with open(FILENAME, 'wb') as file:
         file.write(f"{time},{right},'A',{ask},{strike}\n")
         file.write(f"{time},{right},'B',{bid},{strike}\n")
     
@@ -133,7 +127,6 @@ def create_sublist(list: list, n: int) -> list:
 
     
 def main() -> None:
-    CURRENT_TIME: datetime = datetime.now()
     NUM_OF_STRIKES: int = 30
 
     # Connect to TWS
@@ -150,12 +143,12 @@ def main() -> None:
     
     # Get strike prices to capture data from
     strike_range: list[float] = range(open_strike - 5*NUM_OF_STRIKES, open_strike + 5*NUM_OF_STRIKES, 5)  # Strike prices to get data for (30 +/- opening value)
-    strike_iterations: list[list] = create_sublist(strike_range, 15)                                                  # Sublists of 15 strikes each, due to rate limit
+    strike_iterations: list[list] = create_sublist(strike_range, 15)                                      # Sublists of 15 strikes each, due to rate limit
 
-    for iteration in strike_iterations:
-        for strike in iteration:
-            for right in ['C','P']:
-                for data in get_data(ib, strike, right):
+    for iteration in strike_iterations:                     # 4 Groups of 15
+        for strike in iteration:                            # Each of the 15 Strikes
+            for right in ['C','P']:                         # Call/Put
+                for data in get_data(ib, strike, right):    # Data at 15 second intervals
                     file_write(data)
 
         time.sleep(610) # 10 min cooldown for rate limit
