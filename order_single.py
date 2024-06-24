@@ -72,11 +72,11 @@ def order_single(action: str, nof_lot: int, strike: float, right: str, order_typ
 
     elif order_type == 'STP':
         order.orderType = 'STP'
-        order.auxPrice = assign_if_not_none(stop_price, 'limit_price', order_type)
+        order.auxPrice = assign_if_not_none(stop_price, 'stop_price', order_type)
 
     elif order_type == 'STP LMT':
         order.orderType = 'STP LMT'
-        order.auxPrice = assign_if_not_none(stop_price, 'limit_price', order_type)
+        order.auxPrice = assign_if_not_none(stop_price, 'stop_price', order_type)
         order.lmtPrice = assign_if_not_none(limit_price, 'limit_price', order_type)
         
     else:
@@ -87,8 +87,7 @@ def order_single(action: str, nof_lot: int, strike: float, right: str, order_typ
 
     # Keep the connection open until orders are filled
     ib.sleep(5)
-    
-    # Get the parent order ID and place the stop loss order
+
     order_id = trade.order.orderId
     print(f"order ID = {order_id}")
 
@@ -99,7 +98,7 @@ def order_single(action: str, nof_lot: int, strike: float, right: str, order_typ
 
 ## For testing:
 def main() -> None:
-    order_single('BUY', 1, 5435, 'C', 'STP', 1)
+    order_single('BUY', 1, 5435, 'C', 'STP', 1, 3)
 
 if __name__ == '__main__':
     main()
