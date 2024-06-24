@@ -1,6 +1,14 @@
 """
-This module contains a function (order_combo_profit_taker) to order a multi-leg
-combo position and attach a stop loss order.
+This module contains a function (order_condor) to order an iron condor
+given the call and put spreads, number of lots, stop trigger price, 
+and stop limit price.
+
+# Example Iron Condor
+# long_call_strike: 120
+# short_call_strike: 110
+# Market Value: 105
+# short_put_strike: 100
+# long_put_strike: 90
 """
 from ib_insync import *
 from datetime import date
@@ -21,7 +29,7 @@ def get_contract(ib: IB, strike: float, right: str) -> Option:
 
     return contract
 
-def order_combo_profit_taker(call_spread: tuple[float], put_spread: tuple[float], nof_lot: int, stop_trigger_price: float, stop_limit_price: float, stop_loss_trigger_price: float, stop_loss_limit_price: float = None) -> int:
+def order_condor(call_spread: tuple[float], put_spread: tuple[float], nof_lot: int, stop_trigger_price: float, stop_limit_price: float, stop_loss_trigger_price: float, stop_loss_limit_price: float = None) -> int:
     """
     Submits an combo spread order with stop loss and returns the order ID.
 
@@ -113,7 +121,7 @@ def main() -> None:
     if call_spread is None or put_spread is None:
         raise TypeError("Spread Not Found")
 
-    order_combo_profit_taker(call_spread, put_spread, nof_lot=1, 
+    order_condor(call_spread, put_spread, nof_lot=1, 
                 stop_trigger_price=-1.0, stop_limit_price=-1.0, 
                 stop_loss_trigger_price=-3.0, stop_loss_limit_price=-0.9)
 
