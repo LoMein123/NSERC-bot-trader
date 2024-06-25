@@ -4,13 +4,77 @@ combo position and attach a stop loss order.
 """
 from ib_insync import *
 from datetime import date
-from find_spreads import get_spreads
 
 # Dictonary that maps to the opposite action (BUY -> SELL, SELL -> BUY)
 OPPOSITE = {
     'BUY': 'SELL',
     'SELL': 'BUY'
 }
+
+def place_orders(ib: IB, contract: Contract, orders: list[Order]) -> int:
+    """
+    Function that places orders and attaches all sub-orders
+
+    Parameters
+    ----------
+    ib: Interactive brokers object
+    contract: The order's contract
+    orders: List of orders, the first item in the list must be the parent order, all following items are the sub-orders
+    
+    Parameters
+    ----------
+    Parent order ID
+    """
+    parent_order = orders[0]
+    parent_trade = ib.placeOrder(contract, parent_order)
+    ib.sleep()
+
+    for order in orders[0:]:
+        order.parentId = parent_trade.order.orderId
+        parent_trade = ib.placeOrder(contract, order)
+        ib.sleep()
+
+    return parent_trade.order.orderId
+
+
+def create_order(order_type: str, action: str, nof_lot: int, limit_price: float = None, stop_price: float = None) -> Order:
+    """
+    Creates an order based on the given inputs
+
+    Parameters
+    ----------
+    order_type: Original order's type ('MKT', 'LMT', 'STP', or 'STP LMT')
+    action: 'BUY'/'SELL'
+    nof_lot: number of lots to order
+    limit_price: order's stop price (when order_type is LMT or STP LMT) - default None
+    stop_price: order's limit price (when order_type is STP or STP LMT) - default None
+    
+    Returns
+    ----------
+    Order object
+    """
+    order = Order(
+        action = action,
+        totalQuantity = nof_lot
+    )   
+
+    if order_type == 'MKT':
+        order.orderType = 'MKT'
+    elif order_type == 'LMT':
+        order.orderType = 'LMT'
+        order.lmtPrice = assign_if_not_none(limit_price, 'limit_price', order_type)
+    elif order_type == 'STP':
+        order.orderType = 'STP'
+        order.auxPrice = assign_if_not_none(stop_price, 'limit_price', order_type)
+    elif order_type == 'STP LMT':
+        order.orderType = 'STP LMT'
+        order.auxPrice = assign_if_not_none(stop_price, 'limit_price', order_type)
+        order.lmtPrice = assign_if_not_none(limit_price, 'limit_price', order_type)
+    else:
+        raise SyntaxError("Order type must be MKT, LMT, STP, or STP LMT")
+
+    return order
+
 
 def assign_if_not_none(x: float, variable_name: str, order_type: str) -> float:
     """
@@ -75,6 +139,7 @@ def order_combo_profit_taker(*legs: tuple, action: str, nof_lot: int, order_type
     ib.connect('127.0.0.1', 7497, clientId=1)
 
     combo_legs = [ComboLeg(conId=get_contract(ib, leg[0], leg[2]).conId, ratio=1, action=leg[1], exchange='SMART') for leg in legs]
+    orders = []
 
     # Combo contract
     combo = Bag(
@@ -85,67 +150,28 @@ def order_combo_profit_taker(*legs: tuple, action: str, nof_lot: int, order_type
     )
     
     # Create the parent order
-    parent_order = Order(
-        action = action,
-        totalQuantity = nof_lot
-    )
+    parent_order = create_order(order_type, action, nof_lot, limit_price, stop_price)
+    orders.append(parent_order)
+    
+    # Create the stop loss order if it exists
+    if stop_loss_type:
+        if stop_loss_type not in ['STP', 'STP LMT']: raise SyntaxError("Stop loss type must be STP or STP LMT")
+        stop_loss_order = create_order(stop_loss_type, OPPOSITE[action], nof_lot, stop_loss_limit_price, stop_loss_stop_price)
+        stop_loss_order.parentId = parent_order.orderId
+        orders.append(stop_loss_order)
 
-    # Add the trigger and limit prices based on order type
-    if order_type == 'MKT':
-        parent_order.orderType = 'MKT'
-
-    elif order_type == 'LMT':
-        parent_order.orderType = 'LMT'
-        parent_order.lmtPrice = assign_if_not_none(limit_price, 'limit_price', order_type)
-
-    elif order_type == 'STP':
-        parent_order.orderType = 'STP'
-        parent_order.auxPrice = assign_if_not_none(stop_price, 'limit_price', order_type)
-
-    elif order_type == 'STP LMT':
-        parent_order.orderType = 'STP LMT'
-        parent_order.auxPrice = assign_if_not_none(stop_price, 'limit_price', order_type)
-        parent_order.lmtPrice = assign_if_not_none(limit_price, 'limit_price', order_type)
-        
-    else:
-        raise SyntaxError("Order type must be LMT, STP, or STP LMT")
-
-    # Create and attach the stop loss order
-    stop_loss_order = Order(
-        action = OPPOSITE[action],
-        totalQuantity = nof_lot,
-        parentId = parent_order.orderId
-    )
-
-    # Add the trigger and limit prices based on order type
-    if stop_loss_type == 'STP':
-        stop_loss_order.orderType = 'STP'
-        stop_loss_order.auxPrice = assign_if_not_none(stop_loss_stop_price, 'stop_price', order_type)
-
-    elif stop_loss_type == 'STP LMT':
-        stop_loss_order.orderType = 'STP LMT'
-        stop_loss_order.lmtPrice = assign_if_not_none(stop_loss_limit_price, 'limit_price', order_type)
-        stop_loss_order.auxPrice = assign_if_not_none(stop_loss_stop_price, 'stop_price', order_type)
-
-    else:
-        raise SyntaxError("Stop loss type must be STP or STP LMT")
-
-    # Create and attach the stop loss order
+    # Create the profit taker order if it exists
     if profit_taker_limit:
         profit_taker_order = LimitOrder(
             action = OPPOSITE[action],
             totalQuantity = nof_lot,
-            parentId = parent_order.orderId,
             lmtPrice = profit_taker_limit
         )
+        profit_taker_order.parentId = parent_order.orderId
+        orders.append(profit_taker_order)
 
-    # Place the orders
-    parent_trade = ib.placeOrder(combo, parent_order)
-    ib.placeOrder(combo, stop_loss_order)
-    ib.placeOrder(combo, profit_taker_order)
-
-    order_id = parent_trade.order.orderId
-    print(f"order ID = {order_id}")
+    # Place Orders
+    order_id = place_orders(ib, combo, orders)
 
     ib.disconnect()
 
@@ -154,12 +180,14 @@ def order_combo_profit_taker(*legs: tuple, action: str, nof_lot: int, order_type
 
 ## For testing:
 def main() -> None:
-    order_combo_profit_taker(
-        (5470, 'SELL', 'C'), (5480, 'BUY', 'C'), (5455, 'SELL', 'P'), (5445, 'BUY', 'P'),
-        action='BUY', nof_lot=1, order_type='STP', stop_price=13,
-        stop_loss_type='STP LMT', stop_loss_limit_price=11, stop_loss_stop_price=10,
-        profit_taker_limit=14
+    order_id = order_combo_profit_taker(
+        (5470, 'SELL', 'C'), (5480, 'BUY', 'C'), (5455, 'SELL', 'P'), (5445, 'BUY', 'P'), 
+        action='BUY', nof_lot=1, order_type='STP LMT', limit_price=-1.0, stop_price=-1.0,
+        stop_loss_type='STP LMT', stop_loss_limit_price=-3.0, stop_loss_stop_price=-0.9,
+        profit_taker_limit=-14
     )
+
+    print(f"Order ID = {order_id}")
 
 if __name__ == '__main__':
     main()

@@ -86,7 +86,7 @@ def order_single(action: str, nof_lot: int, strike: float, right: str, order_typ
     trade = ib.placeOrder(contract, order)
 
     # Keep the connection open until orders are filled
-    ib.sleep(5)
+    ib.sleep()
 
     order_id = trade.order.orderId
     print(f"order ID = {order_id}")

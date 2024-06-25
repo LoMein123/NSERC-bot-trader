@@ -97,14 +97,11 @@ def order_condor(call_spread: tuple[float], put_spread: tuple[float], nof_lot: i
 
     # Place the parent order
     parent_trade = ib.placeOrder(combo, parent_order)
-
-    # Keep the connection open until orders are filled
-    ib.sleep(5)
+    ib.sleep()
     
     # Get the parent order ID and place the stop loss order
-    parent_order_id = parent_trade.order.orderId
-    stop_loss_order.parentId = parent_order_id
-    stop_loss_trade = ib.placeOrder(combo, stop_loss_order)
+    stop_loss_order.parentId = parent_trade.order.orderId
+    ib.placeOrder(combo, stop_loss_order)
 
     order_id = parent_trade.order.orderId
     print(f"order ID = {order_id}")
@@ -116,10 +113,13 @@ def order_condor(call_spread: tuple[float], put_spread: tuple[float], nof_lot: i
 
 ## For testing:
 def main() -> None:
-    call_spread, put_spread = get_spreads(width=10, time="3:30", entry_credit=1, nof_lot=1)
+#    call_spread, put_spread = get_spreads(width=10, time="3:30", entry_credit=1, nof_lot=1)
 
-    if call_spread is None or put_spread is None:
-        raise TypeError("Spread Not Found")
+ #   if call_spread is None or put_spread is None:
+  #      raise TypeError("Spread Not Found")
+
+    call_spread = (5470, 5480) 
+    put_spread = (5445, 5455)
 
     order_condor(call_spread, put_spread, nof_lot=1, 
                 stop_trigger_price=-1.0, stop_limit_price=-1.0, 
