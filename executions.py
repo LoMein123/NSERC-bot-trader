@@ -4,6 +4,17 @@ This module reports sell or buy executions.
 from ib_insync import *
 
 def get_executions(ib: IB) -> list:
+    """
+    Returns information about today's executions.  Refer to interactive broker's 'trade history' window.
+
+    Parameters
+    ---------
+    ib: Interactive Brokers object
+
+    Returns
+    ---------
+    List of information about each execution: [action, fin instrument, price, time, commission, quantity]
+    """
     executions: list[dict] = []
 
     fills = ib.fills()
@@ -22,6 +33,7 @@ def get_executions(ib: IB) -> list:
         )  
 
     return executions
+
 
 def main() -> None:
     # Connect to IB
