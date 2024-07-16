@@ -2,24 +2,52 @@
 This module contains a function (get_data) that fetches data (bid, ask) of traded 0DTE intraday options data for the SPX and creates a file.
 """
 from ib_insync import *
-from datetime import datetime, timedelta
-import struct
+from datetime import datetime
 import time
+import pandas as pd
+import numpy as np
+import os.path
+import glob
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-EOFSTR = "&&&--EOF--&&&"
+class log():
+    """
+    Log file custom class
+    """
+    def __init__(self, log_filename: str):
+        """
+        Constructor that creates the log file of specified name or clears any previous log file of the same name
+
+        Parameters
+        ----------
+        log_filename: filename of log file
+        """
+        self.log_filename = log_filename
+        open(self.log_filename, 'w').close()
+
+    def write(self, string: str) -> None:
+        """
+        Method that logs a string to the log file.
+
+        Parameters
+        ----------
+        string: string to log
+        """
+        print(string)
+
+        with open(self.log_filename, 'a') as log_file:
+            log_file.write(string + "\n")
+
 
 def get_open_price(ib: IB, date: datetime) -> float:
     """
-    Function that returns the spx's opening price
+    Returns the SPX's opening price on a given date.
 
     Parameters
     ----------
     ib: Interactive brokers object
     date: Date to get the opening price of
-
-    Returns
-    ----------
-    Opening Price of the SPX on date
     """
     spx_contract = Index(symbol='SPX', exchange='CBOE')
 
@@ -38,33 +66,38 @@ def get_open_price(ib: IB, date: datetime) -> float:
     if bars:
         opening_price = bars[0].open
     else:
-        raise Exception("Could not fetch opening price")
+        raise Exception("Could not fetch opening price.")
 
     return opening_price
 
 
-def fetch_data(ib: IB, strike: float, right: str, side: str, date: datetime, interval_end_time: datetime = None):
+def fetch_data(ib: IB, strike: float, price_type: str, interval_end_time: datetime) -> pd.DataFrame:
     """
-    Generator that yields the bid/ask prices for a 0DTE option.
+    Returns a pandas dataframe containing either the "CallBid", "CallAsk", "PutBid", or "PutAsk" 
+    price of the SPX for a given strike at every second of a 30 min interval.
 
     Parameters
     ----------
     ib: Interactive brokers object
     strike: Strike price
-    right: 'C' or 'P'
-    side: 'B' or 'A'
-    date: Date of option expiry
-
-    Returns
-    ----------
-    List of data [timestamp, strike price, right, bid, ask]
+    price_type: "CallBid", "CallAsk", "PutBid", or "PutAsk"
+    interval_end_time: Ending time of the 30 min interval to get data of (e.g For data between 9:30 and 10:00, enter 10:00 as argument)
     """
-    formatted_date: str = date.strftime("%Y%m%d")      # Using this function inside Option constructor does not work for some reason...
+    typeDict = {
+        "CallBid": ("C", "BID"), 
+        "CallAsk": ("C", "ASK"), 
+        "PutBid": ("P", "BID"), 
+        "PutAsk": ("P", "ASK"), 
+    }
 
-    if interval_end_time is None:   
-        end_time: str = formatted_date + ' 16:00:00'
-    else:
-        end_time: str = formatted_date + interval_end_time.strftime(' %H:%M:%S')
+    try:
+        right = typeDict[price_type][0]
+        side = typeDict[price_type][1]
+    except KeyError:
+        raise SyntaxError('price_type must be either: "CallBid", "CallAsk", "PutBid", "PutAsk"')
+
+    formatted_date: str = interval_end_time.strftime("%Y%m%d")      # Using this function inside Option constructor does not work for some reason...
+    end_time: str = formatted_date + interval_end_time.strftime(' %H:%M:%S') + " America/New_York"
 
     contract = Option(
         symbol='SPX', 
@@ -76,260 +109,318 @@ def fetch_data(ib: IB, strike: float, right: str, side: str, date: datetime, int
         multiplier=100
         )
 
-    if side not in ['B','A']:
-        raise SyntaxError("Side must be 'B' or 'A'.")
-
     # Historical data every 30 mins, 1 second resolution
     # Intervals and Resolution settings -- https://interactivebrokers.github.io/tws-api/historical_limitations.html
-    bars: list[BarData] = ib.reqHistoricalData(contract, end_time, "1800 S", "1 secs", f"{'BID' if side == 'B' else 'ASK'}", 1, 1, False, [])
-    ib.sleep(15)
+    bars: list[BarData] = ib.reqHistoricalData(contract, end_time, "1800 S", "1 secs", side, 1, 1, False, [])
+    ib.sleep()
 
-    for bar in bars: 
-        time = int(bar.date.strftime('%H%M%S') + '000')
+    # Fix dataframe formatting
+    try:
+        df = util.df(bars)
+        df = df[['date','close']]
+        df = df.rename(columns={'close': price_type})
+        df.set_index('date', inplace=True)
+        df.index = pd.to_datetime(df.index)
+    except TypeError:
+        # Error happens here if no data
+        pass
 
-        print(side)
-
-        yield [time, int(strike), right, side, bar.low, bar.high]
+    return df
 
 
-def file_write(data: list, filename: str, binary: bool = False) -> None:
+def file_write(df: pd.DataFrame, filepath: str) -> None:
     """
-    Function that writes data to the specified file with columns:  Timestamp, CallPut, Side, BidAsk, Strike
-    If file is in binary format, 0/1 = Call/Put and 0/1 = Bid/Ask
+    Function that writes data to the specified parquet file with columns ["CallBid", "CallAsk", "PutBid", "PutAsk"]
 
     Parameters
     ----------
-    data: List of data [timestamp, strike price, right, bid, ask]
-    filename: name of file to write to
-    bin: True if binary file/data
+    df: dataframe of data
+    filepath: path of file to write to
     """
-    # Unpack data
-    time, strike, right, side, bid, ask = data    
+    # Append if file exists
+    if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+        existing_df = pd.read_parquet(filepath)
+        combined_df = pd.concat([existing_df, df], ignore_index=True)
+        table = pa.Table.from_pandas(combined_df)
+        pq.write_table(table, filepath)
+        
+    # Create file it it doesn't exist
+    else:
+        pq.write_table(pa.Table.from_pandas(df), filepath)
 
-    if binary:
+    '''# Convert DataFrame to numpy array
+    data_array: np.ndarray = df.to_numpy()
+
+    # Append to binary file
+    with open(filepath, 'ab') as file:
+        data_array.tofile(file)'''
+
+    '''if binary:
         #Dictionaires for converting call/put and bid/ask to 0 and 1
         cp = {"C": 0, "P": 1}
         ba = {"B": 0, "A": 1}
 
-        with open(filename, 'ab') as file:
-            file.write(struct.pack('iiifi', time, cp[right], ba[side], bid, strike))
-
-        '''for testing'''
-        with open('intraday.csv', 'a') as file:
-            file.write(f"{time},{right},{side},{ask},{strike}\n")
-
+        #with open(filename, 'ab') as file:
+            #file.write(struct.pack('iiifi', time, cp[right], ba[side], price, strike))
 
     elif not binary:
-        with open(filename, 'a') as file:
-            file.write(f"{time},{right},{side},{ask},{strike}\n")
+        try:
+            with pd.ExcelWriter(filename, engine='openpyxl', mode = 'a') as writer:
+                df.to_excel(writer, sheet_name=str(df.strike))
+        except FileNotFoundError:
+            with pd.ExcelWriter(filename) as writer:
+                df.to_excel(writer)'''
+    
+
+def file_merge(out_filepath: str, dl_filepath: str, binary: bool) -> None:
+    """
+    Mrges files together of the given directory into an output binary or Excel file.
+    
+    Parameters
+    ----------
+    out_filepath: path of merged ouput file
+    dl_filepath: path to folder of files (.parquet) to merge
+    binary: True if binary (parquet) file, False for xlsx
+    """
+    original_dir = os.getcwd()
+
+    if binary:
+        SCHEMA = pa.schema([
+            ('CallBid', pa.float64()),
+            ('CallAsk', pa.float64()),
+            ('PutBid', pa.float64()),
+            ('PutAsk', pa.float64())
+        ])
+
+        with pq.ParquetWriter("intraday.parquet", schema=SCHEMA, compression='snappy') as writer:
+            os.chdir("dl")
+
+            for temp_file in glob.glob("*.parquet"):
+                temp_df = pd.read_parquet(temp_file)
+                table = pa.Table.from_pandas(temp_df)
+                writer.write_table(table)
 
     else:
-        raise SyntaxError("binary must be True or False")
-    
+        with pd.ExcelWriter(out_filepath, engine='openpyxl') as writer:
+            os.chdir(dl_filepath)
+            
+            for file in glob.glob("*.parquet"):
+                strike: str = file.split('.')[0]
 
-def file_end(filename: str, bin: bool = False) -> None:
+                # Read from parquet file
+                df = pd.read_parquet(file)
+                df.to_excel(writer, sheet_name=strike, header=False, index=False)
+
+        '''with pd.ExcelWriter(out_filepath, engine='openpyxl') as writer:
+            os.chdir(dl_filepath)
+            
+            for file in glob.glob("*.bin"):
+                strike: str = file.split('.')[0]
+
+                # Read from binary file
+                data_array: np.ndarray = np.fromfile(file, dtype=float)
+                
+                # Reshape to be (seconds in 6.5 hours, 4) for 4 combinations of Put/Call and Bid/Ask)
+                data_array = data_array.reshape((-1, 4))
+
+                # Convert back to DataFrame
+                df = pd.DataFrame(data_array)
+                df.to_excel(writer, sheet_name=strike, header=False, index=False)'''
+
+    os.chdir(original_dir)
+
+
+def get_time_intervals(date: datetime, interval_length: int, time_unit: str, starting_time: datetime = None, ending_time: datetime = None) -> pd.DatetimeIndex:
     """
-    Function that writes a special end of file character(s) to the given file.
-    End of file = '&&&--EOF--&&&'
+    Returns a list of time intervals between a given starting and end time (both inclusive).  
+    Start and end times by default are 9:30 AM and 4:00 PM.
 
     Parameters
     ----------
-    filename: name of file to write to
-    bin: True if binary file/data
-    """
-    if bin:
-        #with open(filename, 'ab') as file:
-            #file.write(struct.pack('iiifi', time, cp[right], ba['B'], bid, strike))
-
-        ##### FOR TESTING
-        with open('intraday.csv', 'a') as file:
-            file.write(EOFSTR)
-
-
-    elif not bin:
-        with open(filename, 'a') as file:
-            file.write(EOFSTR)
-
-    else:
-        raise SyntaxError("bin must be True or False")
-    
-
-def file_merge(filenames: list[str], out_filename: str) -> None:
-    """
-    Function that merges files together if they have the end of file character(s)
-    
-    Parameters
-    ----------
-    filenames: list of files to merge by name
-    out_filename: name of merged file 
-    """
-    with open(out_filename, 'w') as outfile:
-        for file in filenames:
-            with open(file) as infile:
-                for line in infile:
-                    if line != EOFSTR:
-                        outfile.write(line)
-
-
-def get_time_intervals(date: datetime, interval_length: int, time_unit: str) -> list[datetime]:
-    """
-    Function that creates a list of time intervals specified by 'delta' from 9:30 AM to 4:00 PM.
-
-    Parameters
-    ----------
-    date: date to split into intervals
+    date: date to get intervals from
     interval_length: Time Interval
-    time_unit: hours, minutes, or seconds
-    
-    Returns
-    ----------
-    list of time intervals as datetime objects
-    **Note: does not include 9:30**
+    time_unit: https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#timeseries-offset-aliases
+    starting_time: start time
+    ending_time: end time
     """
-    intervals: list[datetime] = []
+    # Valid timestamps (Every 30 mins of the trading day (inclusive))
+    intervals = pd.date_range(start=datetime(date.year, date.month, date.day, 9, 30, 0), end=datetime(date.year, date.month, date.day, 16, 0, 0), freq=f'{interval_length}{time_unit}')
 
-    start: datetime = datetime(date.year, date.month, date.day, 9, 30, 0)   # 9:30 AM
-    end: datetime = datetime(date.year, date.month, date.day, 16, 0, 0)     # 4:00 PM
-
-    if time_unit == "hours":
-        delta = timedelta(hours=interval_length)
-    elif time_unit == "minutes":
-        delta = timedelta(minutes=interval_length)
-    elif time_unit == "seconds":
-        delta = timedelta(seconds=interval_length)
-    else:
-        raise SyntaxError("time_unit must be 'hours', 'minutes', or 'seconds'")
-
-    # Every interval_length
-    current: datetime = start
-    while current < end - delta:
-        current += delta
-        intervals.append(current)
-
-    intervals.append(end)
+    # Check if starting time is valid/assign default value of 9:30
+    if starting_time is None:
+        starting_time = datetime(date.year, date.month, date.day, 9, 30, 0)
+    elif starting_time not in intervals or starting_time == intervals[-1]:
+        raise SyntaxError("starting_time must be every 30 mins of the trading day (i.e. 9:30, 10:00, 10:30 ... 15:30).")
     
+    # Check if ending time is valid/assign default value of 16:00
+    if ending_time is None:
+        ending_time = datetime(date.year, date.month, date.day, 16, 0, 0)
+    elif ending_time not in intervals or ending_time == intervals[0]:
+        raise SyntaxError("ending_time must be every 30 mins of the trading day (i.e. 10:00, 10:30 ... 15:30, 16:00).")
+
+    # Check if ending time is before or equal to starting time
+    if ending_time <= starting_time:
+        raise SyntaxError("ending_time must be later than starting_time.")
+
+    # Update intervals accordingly if needed
+    if starting_time != datetime(date.year, date.month, date.day, 9, 30, 0) or ending_time != datetime(date.year, date.month, date.day, 16, 0, 0):
+        intervals = pd.date_range(start=starting_time, end=ending_time, freq='30min')
+
     return intervals
 
 
 def round_to_multiple(x: float, base: int) -> int:
     """
-    Helper function that rounds to the nearest multiple of 'base'
+    Returns 'x' rounded to the nearest multiple of 'base'.
 
     Parameters
     ----------
     x: number to round
     base: multiple to round to
-
-    Returns
-    ----------
-    x rounded to the nearest multiple of 'base'
     """
     return base * round(x/base)
 
 
 def create_sublist(list: list, n: int) -> list: 
     """
-    Helper function that creates sublists of list by grouping elements in groups of 'len'
+    Returns sublists of 'list' by grouping elements in groups of 'n'.
+    If |list| not divisible by n, the last sublist will have a cardinality less than n
 
     Parameters
     ----------
     list: list to divide into sublists
     n: number of elements in each sublist
-
-    Returns
-    ----------
-    list of sublists
     """
     return [list[i:i + n] for i in range(0, len(list), n)]
 
 
-def parse_filename(filename: str) -> tuple[str, bool]:
+def get_strike_range(number_of_strikes: int, opening_strike: int, starting_strike: int = None, ending_strike: int = None) -> range:
     """
-    Function that parses the filename and extension
+    Returns the range of strike prices 'number_of_strikes' +/- 'opening_strike' or just between 'starting_strike' and 'ending_strike'. 
 
     Parameters
     ----------
-    filename: filename
-
-    Returns
-    ----------
-    Filename without extension
-    Boolean of if file is binary
+    number_of_strikes: Number of strikes above and below the opening price to get
+    opening_strike: Closest strike price at market open
+    starting_strike: Custom lower bound strike
+    ending_strike: Custom upper bound strike
     """
-    f = filename.split('.')
+    if starting_strike is None:
+        starting_strike = opening_strike - 5*number_of_strikes
+    else:
+        starting_strike = round_to_multiple(starting_strike, 5)
 
-    if len(f) > 3:
-        raise SyntaxError("Invalid filetype")
+    if ending_strike is None:
+        ending_strike = opening_strike + 5*number_of_strikes
+    else:
+        ending_strike = round_to_multiple(ending_strike, 5)
 
-    filename_no_extension = f[0]
-    binary = True if f[-1].lower() == 'bin' else False
+    if starting_strike > ending_strike:
+        raise SyntaxError("starting_strike is greater than ending_strike")
 
-    return filename_no_extension, binary
+    return range(starting_strike, ending_strike, 5)
 
 
-def get_data(filename: str, file_number: int = 0, date: datetime = datetime.now(), binary: bool = False) -> None:
+def create_folder(name: str) -> None:
+    """
+    Creates a folder of specified name.
+
+    Parameters
+    ----------
+    name: Name of folder to create
+    """
+    try:
+        os.mkdir(name)
+    except FileExistsError:
+        pass
+
+
+def get_data(out_filename: str, date: datetime, binary: bool, number_of_strikes: int = 30,
+             starting_strike: int = None, ending_strike:int = None, starting_time: datetime = None, ending_time: datetime = None) -> None:
     """
     Function that gets all all options data for the SPX at 1 second intervals on a given date, then writes to a file.
     Splits the data into several files, then combines them at the end so that if a crash occurs, can continue from a specified file.
 
     Parameters
     ----------
-    filename: filename
-    file_number: Used for data recovery after crash; the file number to start from - default 0
-    date: date of strikes - default today
-    binary: True if binary file - default False
+    out_filename: output filename (without extension)
+    date: date to get data of
+    binary: True for output file to be .parquet file, False for .xlsx file
+    number_of_strikes: number of strikes +/- the opening price to get the data of - default = 30
+    
+    starting_strike: Specific strike to start at (Must be less than ending_strike) - default = number_of_strikes * 5 - opening price
+    ending_strike: Specific strike to start at (Must be less than ending_strike) - default = number_of_strikes * 5 + opening price
+    starting_time: Specific time to start at (Must be less than ending_strike) - default = 9:30 AM EST
+    ending_time: Specific time to start at (Must be less than ending_strike) - default = 4:00 PM EST
     """
-    NUM_OF_STRIKES: int = 30
+    PRICE_TYPES: list[str] = ["CallBid", "CallAsk", "PutBid", "PutAsk"]
+
+    # Add file extension
+    out_filename += ".parquet" if binary else ".xlsx"
+
+    # Create log file
+    logfile = log("log.txt")
 
     # Connect to TWS
-    ib: IB = IB()
-    ib.connect('127.0.0.1', 7497, clientId=1)
+    try:
+        ib = IB()
+        ib.connect('127.0.0.1', 7497, clientId=1)
+    except ConnectionRefusedError:
+        logfile.write("ERROR: Not Connected to TWS API")
+        raise ConnectionError("You are not connected to TWS API.")
+    
+    # Create time intervals (30 mins apart)
+    intervals: pd.DatetimeIndex = get_time_intervals(date, 30, "min", starting_time, ending_time)
 
     # Get opening price of SPX
     date = date.replace(hour=9, minute=40)
     open_price: float = get_open_price(ib, date)
-    print(f"SPX Opening = {open_price}")
+    logfile.write(f"FETCH: SPX Opening = {open_price}")
 
     # Round opening to nearest multiple of 5
     open_strike: int = round_to_multiple(open_price, 5)
-    print(f"SPX Opening Strike = {open_strike}")
+    logfile.write(f"FETCH: SPX Opening Strike = {open_strike}")
     
-    # Get strike prices to capture data from (NUM_OF_STRIKES +/- opening value)
-    strike_range: range = range(open_strike - 5*NUM_OF_STRIKES, open_strike + 5*NUM_OF_STRIKES, 5)
-    print(f"Strike Range: {strike_range[0]}-{strike_range[-1]}")
-    
+    # Get strike prices to capture data from (NUM_OF_STRIKES +/- opening value if not custom interval)
+    strike_range: range = get_strike_range(number_of_strikes, open_strike, starting_strike, ending_strike)
+    logfile.write(f"FETCH: Strike Range = {strike_range[0]}-{strike_range[-1]}")
+
     # Sublists of 15 strikes each, due to rate limit
     strike_groups: list[list] = create_sublist(strike_range, 15)
 
-    # Time intervals of 30 mins, due to rate limit
-    intervals: list[datetime] = get_time_intervals(date, 30, "minutes")
+    # Create data loaded(dl) subfile for temporary storage of files
+    create_folder("dl")
 
-    # Check if file number can exist
-    num_intervals = len(intervals)
-    if num_intervals <= file_number:
-        raise SyntaxError(f"File number must be less than {num_intervals}")
+    for start_interval, end_interval in zip(intervals[:-1], intervals[1:]):                             # Data of every 30 mins
+        for strike_group in strike_groups:                                                              # Groups of 15 (or less) strikes
+            for strike in strike_group:                                                                 # Each of the 15 strikes
+                current_filepath: str = os.path.join("dl", str(strike) + ".parquet")
 
-    # Get data for every time interval, starting from the file_number-th interval
-    filenames: list[str] = []
-    for i in range(file_number, num_intervals):
-        current_interval: datetime = intervals[i]
+                # Clear files if starting from 9:30 AM
+                if start_interval == start_interval.replace(hour=9, minute=30):
+                    open(current_filepath,'w').close()
 
-        current_filename: str = f"{filename}{i}{'.bin' if binary else '.csv'}"
-        filenames.append(current_filename)
-        open(current_filename, 'w').close()
+                # Create empty dataframe with rows of every second of the 30 min interval and columns of all 4 combinations of Put/Call and Bid/Ask
+                seconds: pd.DatetimeIndex = pd.date_range(start_interval, periods=1800, freq='s', tz='US/Eastern')
+                df = pd.DataFrame(0.0, index=seconds, columns=PRICE_TYPES)
 
-        for strike_group in strike_groups:                                                        # 4 Groups of 15 Strikes
-            for strike in strike_group:                                                           # Each of the 15 Strikes
-                for right in ['C', 'P']:                                                          # Call/Put
-                    for side in ['B', 'A']:                                                       # Bid/Ask
-                        for data in fetch_data(ib, strike, right, side, date, current_interval):  # Get data at 1 second intervals
-                            file_write(data, current_filename)
+                for price_type in PRICE_TYPES:                                                          # Prices for all 4 combinations of Put/Call and Bid/Ask
+                    data: pd.DataFrame = fetch_data(ib, strike, price_type, end_interval)               # Get data at 1 second intervals
+                    df.update(data)                                                                     # Update the dataframe
 
-            time.sleep(370)                                                                       # 6 min cooldown every 15 strikes
-        file_end(current_filename)
+                file_write(df, current_filepath)
 
-    # Merge all files together
-    file_merge(filenames, out_filename=filename)
+                logfile.write(f"FINISHED: {strike} up to {end_interval.strftime('%H:%M %p')}.")
+
+                if strike != strike_group[-1] and strike_group != strike_groups[-1] and end_interval != intervals[-1]:
+                    logfile.write(f"NEXT: {strike+5} from {start_interval.strftime('%H:%M %p')} to {end_interval.strftime('%H:%M %p')}.")
+
+            time.sleep(610)                                                                             # 10 min cooldown after every 15 strikes
+
+    # Merge all files together and delete them
+    logfile.write(f"UPDATE: Creating output file: {out_filename}")
+    file_merge(out_filename, "dl", binary)
+    logfile.write(f"DONE: All data gathered")
 
     # Disconnect from IB
     ib.disconnect()
@@ -338,15 +429,14 @@ def get_data(filename: str, file_number: int = 0, date: datetime = datetime.now(
 ## For Testing
 def main() -> None:
     FILENAME = 'intraday'
-    fileNumber = 7
-    date = datetime(2024, 7, 3)
-    isBinary = False
+    DATE = datetime.now()
+    IS_BINARY = True
 
     tik = time.time()
     start = datetime.now()
     print(f"start time = {start}")
 
-    get_data(FILENAME, fileNumber, date, isBinary)
+    get_data(FILENAME, DATE, IS_BINARY)
 
     end = datetime.now()
     print(f"end time = {end}")
