@@ -25,22 +25,19 @@ def assign_if_not_none(x: float, variable_name: str, order_type: str) -> float:
         raise SyntaxError(f"{variable_name} cannot be empty for {order_type} order")
 
 
-def order_single(action: str, nof_lot: int, strike: float, right: str, order_type: str, limit_price: float = None, stop_price: float = None) -> int:
+def order_single(strike: float, action: str, right: str, nof_lot: int, 
+                 order_type: str, limit_price: float = None, stop_price: float = None) -> int:
     """
     Submits a order for a SPX option and returns the order ID.
 
-    Parameters
-    ----------
-    action: 'BUY' or 'SELL'
-    strike_price: strike price of option
-    right: 'C' or 'P'
-    order_type: 'MKT', 'LMT', 'STP', or 'STP LMT'
-    limit_price: order's stop price (when order_type is LMT or STP LMT) - default None
-    stop_price: order's limit price (when order_type is STP or STP LMT) - default None
-    
-    Returns
-    ----------
-    Order ID of the placed order
+    Parameters:
+    - strike: strike price of option
+    - action: 'BUY' or 'SELL'
+    - right: 'C' or 'P'
+    - nof_lot: number of lots to trade
+    - order_type: 'MKT', 'LMT', 'STP', or 'STP LMT'
+    - limit_price: order's stop price (when order_type is LMT or STP LMT) - default None
+    - stop_price: order's limit price (when order_type is STP or STP LMT) - default None
     """
     # Connect to IB
     ib = IB()

@@ -8,13 +8,14 @@ from datetime import date
 
 def find_closest_midspread(market_price: float, spreads: list[tuple], right: str, saftey_zone: float = 0) -> tuple:
     """
-    Helper function that returns the closest spread strike prices to the market price.
+    Returns the closest spread to the market price.
     Returns None if no spreads found.
 
-    :param market_price: Current market price of SPX
-    :param spreads: List of spreads
-    :param right: "P" for put, "C" for call
-    :param saftey_zone: Buffer between market price and closest spread
+    Parameters:
+    - market_price: Current market price of SPX
+    - spreads: List of spreads
+    - right: "P" for put, "C" for call
+    - saftey_zone: Buffer between market price and closest spread - default 0
     """
     valid_spreads: list = []
 
@@ -66,9 +67,10 @@ def find_spreads(tickers: list[Ticker], width: float, entry_credit: float) -> tu
 
 def mid_price(ticker: Ticker) -> float:
         """
-        Function that returns the midprice of an option
+        Function that returns the midprice of an option.
 
-        :param ticker:
+        Parameters: 
+        - ticker: ticker object
         """
         print(f"ticker.contract.right={ticker.contract.right}")
         print(f"ticker.contract.strike={ticker.contract.strike}")
@@ -105,6 +107,7 @@ def find_spreads_in_list(ticker_list: list[Ticker], right: str, width: float, en
                     spreads.append((short_strike, long_strike, spread_mid_rounded))
         return spreads
 
+
 def get_spreads(width: float, time, entry_credit: float, nof_lot: int, upper_profit_zone: float = 0, lower_profit_zone: int = 0) -> tuple[tuple]:
     """
     Main function that returns 0DTE put spread and a 0DTE 
@@ -113,8 +116,7 @@ def get_spreads(width: float, time, entry_credit: float, nof_lot: int, upper_pro
     is closest to the market price at somet time.
 
     
-    Parameters
-    ----------
+    Parameters:
     width: Width of the spread
     time: Time to execute trade
     entry_credit: entry credit
